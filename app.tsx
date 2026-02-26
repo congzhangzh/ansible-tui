@@ -1,12 +1,23 @@
-// Ansible TUI Runner - single file Ink app
-// Usage: npx tsx app.tsx [-C|--clean] [inventory.yml] [playbook.yml]
+// deno-lint-ignore-file no-explicit-any no-unused-vars no-import-prefix
+// Ansible TUI Runner — single file, zero local dependencies
+// Inline npm: specifiers are intentional: enables `deno run <URL>` with no local files.
+//
+// Run (binary):  ansible-tui [inventory.yml] [playbook.yml]
+// Run (deno):    deno run --allow-read --allow-run --allow-write --allow-env app.tsx
+// Run (remote):  deno run --allow-read --allow-run --allow-write --allow-env \
+//                  https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 
-import React, { useState, useMemo, useEffect, useRef } from "react";
-import { render, Box, Text, useInput, useApp, useStdout } from "ink";
+import React, { useState, useMemo, useEffect, useRef } from "npm:react@18";
+import { render, Box, Text, useInput, useApp, useStdout } from "npm:ink@5";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { load as yamlLoad } from "js-yaml";
+import { load as yamlLoad } from "npm:js-yaml@4";
 import { resolve, dirname, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import process from "node:process";
+
+// ===== Version =====
+
+const VERSION = "0.2.0";
 
 // ===== Types =====
 
@@ -184,11 +195,19 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(initialState?.expanded ?? []));
   const [checkFlag, setCheckFlag] = useState(initialState?.checkFlag ?? false);
   const [diffFlag, setDiffFlag] = useState(initialState?.diffFlag ?? false);
+  const [warnMsg, setWarnMsg] = useState<string | null>(null);
 
   // Track live state for persistence on exit
   useEffect(() => {
     currentState = { hostSel: [...hostSel], taskSel: [...taskSel], expanded: [...expanded], checkFlag, diffFlag, section, hCur, pCur };
   }, [hostSel, taskSel, expanded, checkFlag, diffFlag, section, hCur, pCur]);
+
+  // Auto-dismiss warning after 2s
+  useEffect(() => {
+    if (!warnMsg) return;
+    const t = setTimeout(() => setWarnMsg(null), 2000);
+    return () => clearTimeout(t);
+  }, [warnMsg]);
 
   // -- Execution state --
   const [phase, setPhase] = useState<Phase>("select");
@@ -199,6 +218,15 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
   const outputRef = useRef("");
   const childRef = useRef<ChildProcess | null>(null);
   const [tick, setTick] = useState(0);
+
+  // Derived counts for panel headers
+  const totalHosts = useMemo(() => hostGroups.reduce((n, g) => n + g.hosts.length, 0), [hostGroups]);
+  const selectedHostCount = hostSel.size;
+  const totalTasks = useMemo(() => items.filter((i) => i.type === "task").length, [items]);
+  const selectedTaskCount = useMemo(
+    () => [...taskSel].filter((id) => items.find((i) => i.id === id)?.type === "task").length,
+    [taskSel, items],
+  );
 
   const visible = useMemo(() => items.filter((i) => {
     if (i.type === "play") return true;
@@ -214,7 +242,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
 
   // Viewports for scrolling
   const viewH = Math.max(10, rows - 19); // Reserved rows for header, borders, commands, footer
-  
+
   const safePCur = Math.max(0, Math.min(pCur, visible.length - 1));
   const pScrollStart = Math.max(0, Math.min(safePCur - Math.floor(viewH / 2), Math.max(0, visible.length - viewH)));
   const pbSlice = visible.slice(pScrollStart, pScrollStart + viewH);
@@ -284,6 +312,8 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
       const maxScroll = Math.max(0, totalLines - (rows - 4));
       if (key.upArrow) setOutputScroll((s) => Math.max(0, Math.min(s, maxScroll) - 1));
       if (key.downArrow) setOutputScroll((s) => Math.min(maxScroll, s + 1));
+      if (key.pageUp) setOutputScroll((s) => Math.max(0, s - Math.floor((rows - 4) / 2)));
+      if (key.pageDown) setOutputScroll((s) => Math.min(maxScroll, s + Math.floor((rows - 4) / 2)));
       if (key.return) { setPhase("select"); return; }
       if (input === "q") return app.exit();
       return;
@@ -294,6 +324,8 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     if (input === "c") return setCheckFlag((f) => !f);
     if (input === "d") return setDiffFlag((f) => !f);
     if (input === "r") {
+      // Guard: warn if no hosts or no tasks selected
+      if (hostSel.size === 0) { setWarnMsg("⚠ No hosts selected — add hosts first (Space)"); return; }
       setRunCmd(fullCmd);
       setRunExitCode(null);
       setOutputScroll(0);
@@ -306,10 +338,22 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     }
     if (key.tab) return setSection((s) => (s === "hosts" ? "playbook" : "hosts"));
 
+    // -- Expand all / collapse all (only in playbook section) --
+    if (input === "e") {
+      const playIds = items.filter((i) => i.type === "play").map((i) => i.id);
+      const blockIds = items.filter((i) => i.type === "block").map((i) => i.id);
+      const allIds = [...playIds, ...blockIds];
+      const allExpanded = allIds.every((id) => expanded.has(id));
+      setExpanded(allExpanded ? new Set() : new Set(allIds));
+      return;
+    }
+
     // -- Host section --
     if (section === "hosts") {
       if (key.upArrow) setHCur((c) => Math.max(0, c - 1));
       if (key.downArrow) setHCur((c) => Math.min(flatHosts.length - 1, c + 1));
+      if (key.pageUp) setHCur((c) => Math.max(0, c - viewH));
+      if (key.pageDown) setHCur((c) => Math.min(flatHosts.length - 1, c + viewH));
       if (input === "a") {
         const all = hostGroups.flatMap((g) => g.hosts);
         setHostSel((p) => (all.every((h) => p.has(h)) ? new Set() : new Set(all)));
@@ -335,6 +379,8 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     if (section === "playbook" && visible.length > 0) {
       if (key.upArrow) setPCur((c) => Math.max(0, c - 1));
       if (key.downArrow) setPCur((c) => Math.min(visible.length - 1, c + 1));
+      if (key.pageUp) setPCur((c) => Math.max(0, c - viewH));
+      if (key.pageDown) setPCur((c) => Math.min(visible.length - 1, c + viewH));
       if (input === " ") {
         const it = visible[safePCur];
         if (!it) return;
@@ -444,7 +490,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
       ? Math.max(0, totalLines - viewH)
       : Math.max(0, Math.min(outputScroll, Math.max(0, totalLines - viewH)));
     const slice = outputLines.slice(effectiveScroll, effectiveScroll + viewH);
-    
+
     const spinner = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'][tick % 10];
 
     return (
@@ -467,7 +513,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
           </Text>
           <Text dimColor>
             {phase === "done"
-              ? " [Enter] Back to selection   [↑↓] Scroll   [q] Quit"
+              ? " [Enter] Back   [↑↓/PgUp/PgDn] Scroll   [q] Quit"
               : " [q] Cancel"}
           </Text>
         </Box>
@@ -480,14 +526,22 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     <Box flexDirection="column" paddingX={2} paddingY={1} width="100%">
       <Box marginBottom={1} flexDirection="row" justifyContent="space-between">
         <Text bold color="cyan" backgroundColor="blue"> 🚀 Ansible TUI Runner </Text>
-        {lastResult !== "" && <Text color={lastResult.includes("✓") ? "green" : "red"}>{lastResult}</Text>}
+        <Box flexDirection="row" gap={2}>
+          {warnMsg && <Text bold color="yellow">{warnMsg}</Text>}
+          {!warnMsg && lastResult !== "" && <Text color={lastResult.includes("✓") ? "green" : "red"}>{lastResult}</Text>}
+        </Box>
       </Box>
 
       <Box width="100%" flexDirection="row" gap={2}>
         {/* -- Hosts Panel -- */}
-        <Box flexDirection="column" width="35%" borderStyle="round" borderColor={section === "hosts" ? "blue" : "gray"}>
-          <Box paddingX={1} marginBottom={1}>
-            <Text bold color={section === "hosts" ? "blue" : "white"}>Hosts{section === "hosts" ? " *" : ""}</Text>
+        <Box flexDirection="column" width="35%" borderStyle="round" borderColor={section === "hosts" ? "cyan" : "gray"}>
+          <Box paddingX={1} marginBottom={1} flexDirection="row" justifyContent="space-between">
+            <Text bold color={section === "hosts" ? "cyan" : "white"}>
+              {section === "hosts" ? "❯ " : "  "}Hosts
+            </Text>
+            <Text color={selectedHostCount > 0 ? "green" : "gray"} dimColor={selectedHostCount === 0}>
+              {selectedHostCount}/{totalHosts} selected
+            </Text>
           </Box>
           <Box flexDirection="column" paddingX={1}>
             {hostSlice.map((hi, i) => {
@@ -498,23 +552,28 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
                 ? `${hi.name} (${hostGroups.find((g) => g.name === hi.name)!.hosts.filter((h) => hostSel.has(h)).length}/${hostGroups.find((g) => g.name === hi.name)!.hosts.length})`
                 : hi.name;
               return (
-                <Text key={`h${ri}`} color={cur ? "yellow" : undefined} bold={cur || hi.kind === "group"}>
+                <Text key={`h${ri}`} color={cur ? "yellow" : undefined} bold={hi.kind === "group"}>
                   {cur ? "❯" : " "} {ind}[{hCheck(hi)}] {lbl}
                 </Text>
               );
             })}
             {flatHosts.length > viewH && (
               <Text dimColor>
-                ({hScrollStart + 1}-{Math.min(hScrollStart + viewH, flatHosts.length)}/{flatHosts.length})
+                ({hScrollStart + 1}–{Math.min(hScrollStart + viewH, flatHosts.length)}/{flatHosts.length})
               </Text>
             )}
           </Box>
         </Box>
 
         {/* -- Playbook Panel -- */}
-        <Box flexDirection="column" width="65%" borderStyle="round" borderColor={section === "playbook" ? "blue" : "gray"}>
-          <Box paddingX={1} marginBottom={1}>
-            <Text bold color={section === "playbook" ? "blue" : "white"}>Playbook{section === "playbook" ? " *" : ""}</Text>
+        <Box flexDirection="column" width="65%" borderStyle="round" borderColor={section === "playbook" ? "cyan" : "gray"}>
+          <Box paddingX={1} marginBottom={1} flexDirection="row" justifyContent="space-between">
+            <Text bold color={section === "playbook" ? "cyan" : "white"}>
+              {section === "playbook" ? "❯ " : "  "}Playbook
+            </Text>
+            <Text color={selectedTaskCount > 0 ? "green" : "gray"} dimColor={selectedTaskCount === 0}>
+              {selectedTaskCount}/{totalTasks} tasks
+            </Text>
           </Box>
           <Box flexDirection="column" paddingX={1}>
             {pbSlice.map((it, vi) => {
@@ -523,19 +582,31 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
               const arrow = (it.type === "play" || it.type === "block")
                 ? (expanded.has(it.id) ? "▼ " : "▶ ") : "  ";
               const ind = "  ".repeat(it.depth);
-              const tagStr = it.tags.length > 0 ? ` [${it.tags.join(",")}]` : "";
               return (
                 <Box key={it.id}>
-                  <Text color={cur ? "yellow" : undefined} bold={cur || it.type === "play" || it.type === "block"}>
+                  <Text
+                    color={
+                      cur ? "yellow"
+                      : it.type === "play" ? "cyan"
+                      : it.type === "block" ? "white"
+                      : undefined
+                    }
+                    bold={cur || it.type === "play" || it.type === "block"}
+                  >
                     {cur ? "❯" : " "} {ind}{arrow}[{tCheck(it)}] {it.label}
                   </Text>
-                  {tagStr && <Text dimColor> {tagStr}</Text>}
+                  {it.tags.length > 0 && (
+                    <Text color="cyan" dimColor> [{it.tags.join(",")}]</Text>
+                  )}
+                  {it.hasNever && (
+                    <Text color="magenta" dimColor> (never)</Text>
+                  )}
                 </Box>
               );
             })}
             {visible.length > viewH && (
               <Text dimColor>
-                ({pScrollStart + 1}-{Math.min(pScrollStart + viewH, visible.length)}/{visible.length})
+                ({pScrollStart + 1}–{Math.min(pScrollStart + viewH, visible.length)}/{visible.length})
               </Text>
             )}
           </Box>
@@ -544,29 +615,33 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
 
       {/* -- Command Panel -- */}
       <Box borderStyle="round" borderColor="green" flexDirection="column" paddingX={1}>
-        <Text bold color="green">Command Options</Text>
-        <Box marginTop={1} paddingX={1}>
-          <Text color="white">{fullCmd || "(select hosts and tasks)"}</Text>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold color="green">Command Preview</Text>
+          <Box flexDirection="row" gap={3}>
+            <Text color={checkFlag ? "yellow" : "gray"}>--check {checkFlag ? "ON" : "off"}</Text>
+            <Text color={diffFlag ? "yellow" : "gray"}>--diff {diffFlag ? "ON" : "off"}</Text>
+            {!hasTags && hasTaskSelection && hasUntaggedSel && (
+              <Text color="yellow">⚠ all non-never tasks will run</Text>
+            )}
+            {hasTags && hasUntaggedSel && (
+              <Text color="yellow">⚠ untagged tasks won't run</Text>
+            )}
+          </Box>
         </Box>
-        <Box marginTop={1} paddingX={1} flexDirection="row" gap={4}>
-           <Text color={checkFlag ? "yellow" : "gray"}>--check: {checkFlag ? "ON" : "OFF"}</Text>
-           <Text color={diffFlag ? "yellow" : "gray"}>--diff: {diffFlag ? "ON" : "OFF"}</Text>
-           {!hasTags && hasTaskSelection && hasUntaggedSel && (
-             <Text color="yellow"> ⚠ all non-never tasks will run</Text>
-           )}
-           {hasTags && hasUntaggedSel && (
-             <Text color="yellow"> ⚠ untagged tasks won't run</Text>
-           )}
+        <Box marginTop={1} paddingX={1}>
+          <Text color={fullCmd.includes("--limit") || fullCmd.includes("--tags") ? "white" : "gray"}>
+            {fullCmd || "(select hosts and tasks to preview command)"}
+          </Text>
         </Box>
       </Box>
 
       {/* -- Footer -- */}
       <Box flexDirection="column" marginTop={1} paddingX={1}>
         <Text dimColor>
-          <Text bold color="white">[Tab]</Text> Switch Panel   <Text bold color="white">[Space]</Text> Toggle   <Text bold color="white">[a]</Text> All Hosts   <Text bold color="white">[→/Enter]</Text> Expand   <Text bold color="white">[←]</Text> Collapse
+          <Text bold color="white">[Tab]</Text> Switch Panel   <Text bold color="white">[Space]</Text> Toggle   <Text bold color="white">[a]</Text> All Hosts   <Text bold color="white">[e]</Text> Expand/Collapse All   <Text bold color="white">[→/Enter]</Text> Expand   <Text bold color="white">[←]</Text> Collapse
         </Text>
         <Text dimColor>
-          <Text bold color="white">[r]</Text> Run command   <Text bold color="white">[c]</Text> Toggle --check   <Text bold color="white">[d]</Text> Toggle --diff   <Text bold color="white">[s]</Text> Show Cmd   <Text bold color="white">[q]</Text> Quit
+          <Text bold color="white">[r]</Text> Run   <Text bold color="white">[c]</Text> --check   <Text bold color="white">[d]</Text> --diff   <Text bold color="white">[s]</Text> Show Cmd   <Text bold color="white">[PgUp/PgDn]</Text> Page   <Text bold color="white">[q]</Text> Quit
         </Text>
       </Box>
     </Box>
@@ -575,23 +650,35 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
 
 // ===== Entry =====
 
-function findFile(name: string): string {
+const INVENTORY_NAMES = ["inventory.yml", "inventory.yaml", "hosts.yml", "hosts.yaml", "hosts"];
+const PLAYBOOK_NAMES = ["playbook.yml", "playbook.yaml", "site.yml", "site.yaml"];
+
+function findFile(candidates: string[]): string {
   const cwd = process.cwd();
-  if (existsSync(resolve(cwd, name))) return resolve(cwd, name);
-  if (existsSync(resolve(cwd, "..", name))) return resolve(cwd, "..", name);
-  console.error(`Cannot find ${name} in . or ..`);
+  for (const name of candidates) {
+    if (existsSync(resolve(cwd, name))) return resolve(cwd, name);
+    if (existsSync(resolve(cwd, "..", name))) return resolve(cwd, "..", name);
+  }
+  console.error(`Cannot find any of [${candidates.join(", ")}] in . or ..`);
   process.exit(1);
 }
 
 const argv = process.argv.slice(2);
+
+// Handle --version / -v flag
+if (argv.includes("--version") || argv.includes("-v")) {
+  console.log(`ansible-tui v${VERSION}`);
+  process.exit(0);
+}
+
 const cleanStart = argv.includes("--clean") || argv.includes("-C");
 const args = argv.filter((a) => a !== "--clean" && a !== "-C");
-const invPath = args[0] ? resolve(args[0]) : findFile("inventory.yml");
-const pbPath = args[1] ? resolve(args[1]) : findFile("playbook.yml");
+const invPath = args[0] ? resolve(args[0]) : findFile(INVENTORY_NAMES);
+const pbPath = args[1] ? resolve(args[1]) : findFile(PLAYBOOK_NAMES);
 
 if (!process.stdin.isTTY) {
   console.error("Error: this TUI requires an interactive terminal (TTY).");
-  console.error("Run directly: npx tsx app.tsx");
+  console.error("Run directly: ansible-tui  OR  npx tsx app.tsx");
   process.exit(1);
 }
 
