@@ -1,16 +1,16 @@
-// deno-lint-ignore-file no-explicit-any no-unused-vars no-import-prefix
+// deno-lint-ignore-file no-explicit-any
 // Ansible TUI Runner — single file, zero local dependencies
-// Inline npm: specifiers are intentional: enables `deno run <URL>` with no local files.
 //
-// Run (binary):  ansible-tui [inventory.yml] [playbook.yml]
-// Run (deno):    deno run --allow-read --allow-run --allow-write --allow-env app.tsx
-// Run (remote):  deno run --allow-read --allow-run --allow-write --allow-env \
-//                  https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
+// Run (binary):   ansible-tui [inventory.yml] [playbook.yml]
+// Run (local):    deno run --allow-read --allow-run --allow-write --allow-env app.tsx
+// Run (remote):   deno run --allow-read --allow-run --allow-write --allow-env \
+//                   --import-map=https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json \
+//                   https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 
-import React, { useState, useMemo, useEffect, useRef } from "npm:react@18";
-import { render, Box, Text, useInput, useApp, useStdout } from "npm:ink@5";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { load as yamlLoad } from "npm:js-yaml@4";
+import { load as yamlLoad } from "js-yaml";
 import { resolve, dirname, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import process from "node:process";
