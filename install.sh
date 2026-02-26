@@ -3,7 +3,7 @@ set -e
 
 # Ansible TUI simple installer
 
-REPO="<user>/<repo>" # To be replaced with actual repo
+REPO="congzhangzh/ansible-tui"
 BINARY_NAME="ansible-tui"
 
 # Detect OS and architecture

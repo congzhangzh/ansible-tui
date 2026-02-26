@@ -28,7 +28,7 @@ The easiest way to use Ansible TUI is to download the standalone binary for your
 OS. It requires **no Node.js, no Deno, and no Python**.
 
 ```bash
-curl -sL https://raw.githubusercontent.com/<user>/<repo>/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/install.sh | bash
 sudo mv ansible-tui /usr/local/bin/
 ```
 
@@ -54,8 +54,8 @@ deno run --allow-read --allow-run --allow-write --allow-env app.tsx
 
 # Remote (pass import map explicitly)
 deno run --allow-read --allow-run --allow-write --allow-env \
-  --import-map=https://raw.githubusercontent.com/<user>/<repo>/main/ansible/tui/deno.json \
-  https://raw.githubusercontent.com/<user>/<repo>/main/ansible/tui/app.tsx
+  --import-map=https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json \
+  https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 ```
 
 ## Keybindings
@@ -143,7 +143,7 @@ import { load } from "npm:js-yaml@4";
 This would enable true zero-install remote execution:
 
 ```bash
-deno run -A https://raw.githubusercontent.com/.../app.tsx
+deno run -A https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 ```
 
 No `deno.json`, no `npm install`, no `node_modules`. Just one URL.
