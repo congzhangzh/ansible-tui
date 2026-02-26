@@ -1,0 +1,559 @@
+// Ansible TUI Runner - single file Ink app
+// Usage: npx tsx app.tsx [-C|--clean] [inventory.yml] [playbook.yml]
+
+import React, { useState, useMemo, useEffect, useRef } from "react";
+import { render, Box, Text, useInput, useApp, useStdout } from "ink";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { load as yamlLoad } from "js-yaml";
+import { resolve, dirname, relative } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+
+// ===== Types =====
+
+interface HostGroup {
+  name: string;
+  hosts: string[];
+}
+
+interface FlatItem {
+  id: string;
+  label: string;
+  depth: number;
+  type: "play" | "block" | "task";
+  tags: string[];
+  hasNever: boolean;
+  playIndex: number;
+  parentId?: string;
+}
+
+interface HostListItem {
+  kind: "group" | "host";
+  name: string;
+  group?: string;
+}
+
+// ===== YAML Parsing =====
+
+function parseInventory(filePath: string): HostGroup[] {
+  const data = yamlLoad(readFileSync(filePath, "utf-8")) as any;
+  const groups: HostGroup[] = [];
+  for (const [name, val] of Object.entries(data?.all?.children || {})) {
+    const hosts = Object.keys((val as any)?.hosts || {});
+    if (hosts.length > 0) groups.push({ name, hosts });
+  }
+  return groups;
+}
+
+interface ParsedNode {
+  name: string;
+  tags: string[];
+  hasNever: boolean;
+  type: "block" | "task";
+  children?: ParsedNode[];
+}
+
+function extractNodes(tasks: any[], inherited: string[] = []): ParsedNode[] {
+  if (!Array.isArray(tasks)) return [];
+  return tasks.flatMap((t) => {
+    if (!t || typeof t !== "object") return [];
+    const own: string[] = Array.isArray(t.tags) ? t.tags : t.tags ? [t.tags] : [];
+    const allTags = [...new Set([...inherited, ...own])];
+    if (t.block) {
+      const children = extractNodes(t.block, allTags);
+      if (!t.name) return children; // unnamed block — flatten
+      return [{
+        name: t.name, type: "block" as const, children,
+        tags: allTags.filter((x) => x !== "never"), hasNever: allTags.includes("never"),
+      }];
+    }
+    if (!t.name) return [];
+    return [{
+      name: t.name, type: "task" as const,
+      tags: allTags.filter((x) => x !== "never"), hasNever: allTags.includes("never"),
+    }];
+  });
+}
+
+function parsePlaybook(filePath: string): FlatItem[] {
+  const plays = yamlLoad(readFileSync(filePath, "utf-8")) as any[];
+  const items: FlatItem[] = [];
+  (plays || []).forEach((play: any, pi: number) => {
+    if (!play?.name) return;
+    const pt: string[] = Array.isArray(play.tags) ? play.tags : play.tags ? [play.tags] : [];
+    items.push({
+      id: `p${pi}`, label: play.name, depth: 0, type: "play",
+      tags: pt.filter((t) => t !== "never"), hasNever: pt.includes("never"), playIndex: pi,
+    });
+    let taskIdx = 0, blockIdx = 0;
+    const flatten = (nodes: ParsedNode[], depth: number, parentId?: string) => {
+      for (const node of nodes) {
+        if (node.type === "block") {
+          const id = `p${pi}b${blockIdx++}`;
+          items.push({
+            id, label: node.name, depth, type: "block",
+            tags: node.tags, hasNever: node.hasNever, playIndex: pi, parentId,
+          });
+          if (node.children) flatten(node.children, depth + 1, id);
+        } else {
+          items.push({
+            id: `p${pi}t${taskIdx++}`, label: node.name, depth, type: "task",
+            tags: node.tags, hasNever: node.hasNever, playIndex: pi, parentId,
+          });
+        }
+      }
+    };
+    flatten(extractNodes(play.tasks || []), 1);
+  });
+  return items;
+}
+
+// ===== Command Builder =====
+
+function buildCommand(hosts: Set<string>, checked: Set<string>, items: FlatItem[], inv: string, pb: string): string {
+  const parts = ["ansible-playbook", "-i", inv, pb];
+  if (hosts.size > 0) parts.push("--limit", [...hosts].join(","));
+  const tags = new Set<string>();
+  for (const id of checked) {
+    const it = items.find((i) => i.id === id);
+    if (!it || it.type !== "task") continue;
+    it.tags.forEach((t) => tags.add(t));
+    const play = items.find((i) => i.type === "play" && i.playIndex === it.playIndex);
+    if (play?.hasNever) play.tags.forEach((t) => tags.add(t));
+  }
+  if (tags.size > 0) parts.push("--tags", [...tags].join(","));
+  return parts.join(" ");
+}
+
+// ===== State Persistence =====
+
+interface PersistedState {
+  hostSel: string[];
+  taskSel: string[];
+  expanded: string[];
+  checkFlag?: boolean;
+  diffFlag?: boolean;
+  section?: "hosts" | "playbook";
+  hCur?: number;
+  pCur?: number;
+}
+
+function loadState(filePath: string): PersistedState | null {
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (data && Array.isArray(data.hostSel) && Array.isArray(data.taskSel) && Array.isArray(data.expanded)) {
+      return data as PersistedState;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function saveState(filePath: string, state: PersistedState): void {
+  try { writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n"); } catch { /* ignore */ }
+}
+
+// ===== App =====
+
+type Phase = "select" | "running" | "done";
+
+let showCmd: string | null = null;
+let currentState: PersistedState | null = null;
+
+function App({ hostGroups, items, inv, pb, cwd, initialState }: {
+  hostGroups: HostGroup[]; items: FlatItem[]; inv: string; pb: string; cwd: string;
+  initialState?: PersistedState | null;
+}) {
+  const app = useApp();
+  const { stdout } = useStdout();
+  const rows = stdout?.rows ?? 40;
+
+  const flatHosts = useMemo<HostListItem[]>(() => {
+    const out: HostListItem[] = [];
+    for (const g of hostGroups) {
+      out.push({ kind: "group", name: g.name });
+      for (const h of g.hosts) out.push({ kind: "host", name: h, group: g.name });
+    }
+    return out;
+  }, [hostGroups]);
+
+  // -- Selection state (persisted across phases) --
+  const [section, setSection] = useState<"hosts" | "playbook">(initialState?.section ?? "hosts");
+  const [hCur, setHCur] = useState(initialState?.hCur ?? 0);
+  const [pCur, setPCur] = useState(initialState?.pCur ?? 0);
+  const [hostSel, setHostSel] = useState<Set<string>>(() => new Set(initialState?.hostSel ?? []));
+  const [taskSel, setTaskSel] = useState<Set<string>>(() => new Set(initialState?.taskSel ?? []));
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(initialState?.expanded ?? []));
+  const [checkFlag, setCheckFlag] = useState(initialState?.checkFlag ?? false);
+  const [diffFlag, setDiffFlag] = useState(initialState?.diffFlag ?? false);
+
+  // Track live state for persistence on exit
+  useEffect(() => {
+    currentState = { hostSel: [...hostSel], taskSel: [...taskSel], expanded: [...expanded], checkFlag, diffFlag, section, hCur, pCur };
+  }, [hostSel, taskSel, expanded, checkFlag, diffFlag, section, hCur, pCur]);
+
+  // -- Execution state --
+  const [phase, setPhase] = useState<Phase>("select");
+  const [runCmd, setRunCmd] = useState("");
+  const [runExitCode, setRunExitCode] = useState<number | null>(null);
+  const [lastResult, setLastResult] = useState("");
+  const [outputScroll, setOutputScroll] = useState(0);
+  const outputRef = useRef("");
+  const childRef = useRef<ChildProcess | null>(null);
+  const [, setTick] = useState(0);
+
+  const visible = useMemo(() => items.filter((i) => {
+    if (i.type === "play") return true;
+    if (!expanded.has(`p${i.playIndex}`)) return false;
+    // Walk parent chain — all ancestor blocks must be expanded
+    let pid = i.parentId;
+    while (pid) {
+      if (!expanded.has(pid)) return false;
+      pid = items.find((x) => x.id === pid)?.parentId;
+    }
+    return true;
+  }), [items, expanded]);
+
+  // Viewport for playbook scrolling
+  const pbViewH = Math.max(5, rows - flatHosts.length - 10);
+  const safePCur = Math.max(0, Math.min(pCur, visible.length - 1));
+  const scrollStart = Math.max(0, Math.min(safePCur - Math.floor(pbViewH / 2), visible.length - pbViewH));
+  const pbSlice = visible.slice(scrollStart, scrollStart + pbViewH);
+
+  const cmd = buildCommand(hostSel, taskSel, items, inv, pb);
+  const fullCmd = cmd + (checkFlag ? " --check" : "") + (diffFlag ? " --diff" : "");
+  const hasTags = cmd.includes("--tags");
+  const hasTaskSelection = [...taskSel].some((id) => items.find((i) => i.id === id)?.type === "task");
+  const hasUntaggedSel = [...taskSel].some((id) => {
+    const it = items.find((i) => i.id === id);
+    if (!it || it.type !== "task" || it.tags.length > 0 || it.hasNever) return false;
+    const play = items.find((i) => i.type === "play" && i.playIndex === it.playIndex);
+    return !play?.hasNever;
+  });
+
+  // -- Command execution effect --
+  useEffect(() => {
+    if (phase !== "running") return;
+
+    outputRef.current = "";
+    const child = spawn("sh", ["-c", runCmd], {
+      cwd,
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "true" },
+    });
+    childRef.current = child;
+
+    const onData = (data: Buffer) => { outputRef.current += data.toString(); };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+
+    // Periodic re-render to stream output (every 200ms)
+    const timer = setInterval(() => setTick((t) => t + 1), 200);
+
+    child.on("close", (code) => {
+      clearInterval(timer);
+      childRef.current = null;
+      const c = code ?? 1;
+      setRunExitCode(c);
+      setLastResult(c === 0 ? "✓ Last run succeeded" : `✗ Last run failed (exit ${c})`);
+      setOutputScroll(999999); // Clamp in render → scroll to bottom
+      setPhase("done");
+      setTick((t) => t + 1); // Final flush
+    });
+
+    return () => {
+      clearInterval(timer);
+      if (child.exitCode === null) child.kill();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, runCmd]);
+
+  // -- Input handling --
+  useInput((input, key) => {
+    // --- Running phase: only allow cancel ---
+    if (phase === "running") {
+      if (input === "q") childRef.current?.kill();
+      return;
+    }
+
+    // --- Done phase: scroll output, Enter to go back ---
+    if (phase === "done") {
+      const totalLines = outputRef.current.split("\n").length;
+      const maxScroll = Math.max(0, totalLines - (rows - 4));
+      if (key.upArrow) setOutputScroll((s) => Math.max(0, Math.min(s, maxScroll) - 1));
+      if (key.downArrow) setOutputScroll((s) => Math.min(maxScroll, s + 1));
+      if (key.return) { setPhase("select"); return; }
+      if (input === "q") return app.exit();
+      return;
+    }
+
+    // --- Select phase ---
+    if (input === "q") return app.exit();
+    if (input === "c") return setCheckFlag((f) => !f);
+    if (input === "d") return setDiffFlag((f) => !f);
+    if (input === "r") {
+      setRunCmd(fullCmd);
+      setRunExitCode(null);
+      setOutputScroll(0);
+      setPhase("running");
+      return;
+    }
+    if (input === "s") {
+      showCmd = fullCmd;
+      return app.exit();
+    }
+    if (key.tab) return setSection((s) => (s === "hosts" ? "playbook" : "hosts"));
+
+    // -- Host section --
+    if (section === "hosts") {
+      if (key.upArrow) setHCur((c) => Math.max(0, c - 1));
+      if (key.downArrow) setHCur((c) => Math.min(flatHosts.length - 1, c + 1));
+      if (input === "a") {
+        const all = hostGroups.flatMap((g) => g.hosts);
+        setHostSel((p) => (all.every((h) => p.has(h)) ? new Set() : new Set(all)));
+      }
+      if (input === " ") {
+        const hi = flatHosts[hCur];
+        if (!hi) return;
+        setHostSel((prev) => {
+          const n = new Set(prev);
+          if (hi.kind === "group") {
+            const g = hostGroups.find((g) => g.name === hi.name)!;
+            const allOn = g.hosts.every((h) => n.has(h));
+            g.hosts.forEach((h) => (allOn ? n.delete(h) : n.add(h)));
+          } else {
+            n.has(hi.name) ? n.delete(hi.name) : n.add(hi.name);
+          }
+          return n;
+        });
+      }
+    }
+
+    // -- Playbook section --
+    if (section === "playbook" && visible.length > 0) {
+      if (key.upArrow) setPCur((c) => Math.max(0, c - 1));
+      if (key.downArrow) setPCur((c) => Math.min(visible.length - 1, c + 1));
+      if (input === " ") {
+        const it = visible[safePCur];
+        if (!it) return;
+        setTaskSel((prev) => {
+          const n = new Set(prev);
+          if (it.type === "play") {
+            // Toggle ALL tasks in this play (including inside blocks)
+            const allTasks = items.filter((i) => i.type === "task" && i.playIndex === it.playIndex);
+            const allOn = allTasks.every((k) => n.has(k.id));
+            allTasks.forEach((k) => (allOn ? n.delete(k.id) : n.add(k.id)));
+            // Update block checkboxes
+            items.filter((i) => i.type === "block" && i.playIndex === it.playIndex).forEach((b) => {
+              const bKids = items.filter((i) => i.type === "task" && i.parentId === b.id);
+              bKids.every((k) => n.has(k.id)) ? n.add(b.id) : n.delete(b.id);
+            });
+            allOn ? n.delete(it.id) : n.add(it.id);
+          } else if (it.type === "block") {
+            // Toggle all tasks inside this block
+            const bKids = items.filter((i) => i.type === "task" && i.parentId === it.id);
+            const allOn = bKids.every((k) => n.has(k.id));
+            bKids.forEach((k) => (allOn ? n.delete(k.id) : n.add(k.id)));
+            allOn ? n.delete(it.id) : n.add(it.id);
+            // Update play checkbox
+            const pid = `p${it.playIndex}`;
+            const allPlayTasks = items.filter((i) => i.type === "task" && i.playIndex === it.playIndex);
+            allPlayTasks.every((s) => n.has(s.id)) ? n.add(pid) : n.delete(pid);
+          } else {
+            // Toggle single task
+            n.has(it.id) ? n.delete(it.id) : n.add(it.id);
+            // Update parent block checkbox (if any)
+            if (it.parentId) {
+              const sibs = items.filter((i) => i.type === "task" && i.parentId === it.parentId);
+              sibs.every((s) => n.has(s.id)) ? n.add(it.parentId) : n.delete(it.parentId);
+            }
+            // Update play checkbox
+            const pid = `p${it.playIndex}`;
+            const allPlayTasks = items.filter((i) => i.type === "task" && i.playIndex === it.playIndex);
+            allPlayTasks.every((s) => n.has(s.id)) ? n.add(pid) : n.delete(pid);
+          }
+          return n;
+        });
+      }
+      if (key.return || key.rightArrow) {
+        const it = visible[safePCur];
+        if (it?.type === "play" || it?.type === "block") setExpanded((p) => new Set(p).add(it.id));
+      }
+      if (key.leftArrow) {
+        const it = visible[safePCur];
+        if (it?.type === "play") {
+          setExpanded((p) => { const n = new Set(p); n.delete(it.id); return n; });
+        } else if (it?.type === "block") {
+          if (expanded.has(it.id)) {
+            setExpanded((p) => { const n = new Set(p); n.delete(it.id); return n; });
+          } else {
+            // Jump to parent (play or parent block)
+            const target = it.parentId ?? `p${it.playIndex}`;
+            const idx = visible.findIndex((v) => v.id === target);
+            if (idx >= 0) setPCur(idx);
+          }
+        } else if (it?.type === "task") {
+          // Jump to parent block or play
+          const target = it.parentId ?? `p${it.playIndex}`;
+          const idx = visible.findIndex((v) => v.id === target);
+          if (idx >= 0) setPCur(idx);
+        }
+      }
+    }
+  });
+
+  // -- Render helpers --
+  const hCheck = (hi: HostListItem) => {
+    if (hi.kind === "group") {
+      const g = hostGroups.find((g) => g.name === hi.name)!;
+      const n = g.hosts.filter((h) => hostSel.has(h)).length;
+      return n === 0 ? " " : n === g.hosts.length ? "x" : "~";
+    }
+    return hostSel.has(hi.name) ? "x" : " ";
+  };
+
+  const tCheck = (it: FlatItem) => {
+    if (it.type === "play") {
+      const kids = items.filter((i) => i.type === "task" && i.playIndex === it.playIndex);
+      const n = kids.filter((k) => taskSel.has(k.id)).length;
+      return n === 0 ? " " : n === kids.length ? "x" : "~";
+    }
+    if (it.type === "block") {
+      const kids = items.filter((i) => i.type === "task" && i.parentId === it.id);
+      const n = kids.filter((k) => taskSel.has(k.id)).length;
+      return n === 0 ? " " : n === kids.length ? "x" : "~";
+    }
+    return taskSel.has(it.id) ? "x" : " ";
+  };
+
+  // ====== Render: Running / Done ======
+  if (phase === "running" || phase === "done") {
+    const raw = outputRef.current;
+    const outputLines = raw.split("\n").map((line) => {
+      // Handle \r (carriage return) — keep only the last segment
+      const parts = line.split("\r");
+      return parts[parts.length - 1];
+    });
+
+    const viewH = rows - 4;
+    const totalLines = outputLines.length;
+    // Auto-scroll during running, user-controlled in done
+    const effectiveScroll = phase === "running"
+      ? Math.max(0, totalLines - viewH)
+      : Math.max(0, Math.min(outputScroll, Math.max(0, totalLines - viewH)));
+    const slice = outputLines.slice(effectiveScroll, effectiveScroll + viewH);
+
+    return (
+      <Box flexDirection="column">
+        <Text bold color={phase === "running" ? "yellow" : (runExitCode === 0 ? "green" : "red")}>
+          {phase === "running"
+            ? ` ⏳ ${runCmd}`
+            : ` ${runExitCode === 0 ? "✓" : "✗"} Exit ${runExitCode}`}
+        </Text>
+        {slice.map((line, i) => (
+          <Text key={effectiveScroll + i}>{line}</Text>
+        ))}
+        {totalLines > viewH && (
+          <Text dimColor> ({effectiveScroll + 1}–{Math.min(effectiveScroll + viewH, totalLines)}/{totalLines})</Text>
+        )}
+        <Text dimColor>
+          {phase === "done"
+            ? " [Enter] back to selection  [↑↓] scroll  [q] quit"
+            : " [q] cancel"}
+        </Text>
+      </Box>
+    );
+  }
+
+  // ====== Render: Select ======
+  return (
+    <Box flexDirection="column">
+      <Text bold color="cyan"> Ansible TUI Runner</Text>
+      {lastResult !== "" && <Text dimColor> {lastResult}</Text>}
+
+      <Text bold dimColor>{`── Hosts${section === "hosts" ? " *" : ""} ──`}</Text>
+      {flatHosts.map((hi, i) => {
+        const cur = section === "hosts" && i === hCur;
+        const ind = hi.kind === "host" ? "  " : "";
+        const lbl = hi.kind === "group"
+          ? `${hi.name} (${hostGroups.find((g) => g.name === hi.name)!.hosts.filter((h) => hostSel.has(h)).length}/${hostGroups.find((g) => g.name === hi.name)!.hosts.length})`
+          : hi.name;
+        return (
+          <Text key={`h${i}`} color={cur ? "yellow" : undefined} bold={cur || hi.kind === "group"}>
+            {cur ? ">" : " "} {ind}[{hCheck(hi)}] {lbl}
+          </Text>
+        );
+      })}
+
+      <Text bold dimColor>{`── Playbook${section === "playbook" ? " *" : ""} ──`}</Text>
+      {pbSlice.map((it, vi) => {
+        const ri = scrollStart + vi;
+        const cur = section === "playbook" && ri === safePCur;
+        const arrow = (it.type === "play" || it.type === "block")
+          ? (expanded.has(it.id) ? "▼ " : "▶ ") : "  ";
+        const ind = "    ".repeat(it.depth);
+        const tagStr = it.tags.length > 0 ? ` [${it.tags.join(",")}]` : "";
+        return (
+          <Box key={it.id}>
+            <Text color={cur ? "yellow" : undefined} bold={cur || it.type === "play" || it.type === "block"}>
+              {cur ? ">" : " "} {ind}{arrow}[{tCheck(it)}] {it.label}
+            </Text>
+            {tagStr && <Text dimColor>{tagStr}</Text>}
+          </Box>
+        );
+      })}
+      {visible.length > pbViewH && (
+        <Text dimColor> ({scrollStart + 1}-{Math.min(scrollStart + pbViewH, visible.length)}/{visible.length})</Text>
+      )}
+
+      <Text bold dimColor>── Command ──</Text>
+      <Text color="green"> {fullCmd || "(select hosts and tasks)"}</Text>
+      <Text dimColor>{` [c] check:${checkFlag ? "ON" : "off"}  [d] diff:${diffFlag ? "ON" : "off"}`}</Text>
+      {!hasTags && hasTaskSelection && hasUntaggedSel && (
+        <Text color="yellow"> ⚠ selected tasks have no tags — all non-never tasks will run</Text>
+      )}
+      {hasTags && hasUntaggedSel && (
+        <Text color="yellow"> ⚠ untagged tasks won't run when --tags is set</Text>
+      )}
+
+      <Text dimColor> [Tab] switch  [Space] toggle  [a] all hosts  [→/Enter] expand  [←] collapse  [r] run  [c] check  [d] diff  [s] show  [q] quit</Text>
+    </Box>
+  );
+}
+
+// ===== Entry =====
+
+function findFile(name: string): string {
+  const cwd = process.cwd();
+  if (existsSync(resolve(cwd, name))) return resolve(cwd, name);
+  if (existsSync(resolve(cwd, "..", name))) return resolve(cwd, "..", name);
+  console.error(`Cannot find ${name} in . or ..`);
+  process.exit(1);
+}
+
+const argv = process.argv.slice(2);
+const cleanStart = argv.includes("--clean") || argv.includes("-C");
+const args = argv.filter((a) => a !== "--clean" && a !== "-C");
+const invPath = args[0] ? resolve(args[0]) : findFile("inventory.yml");
+const pbPath = args[1] ? resolve(args[1]) : findFile("playbook.yml");
+
+if (!process.stdin.isTTY) {
+  console.error("Error: this TUI requires an interactive terminal (TTY).");
+  console.error("Run directly: npx tsx app.tsx");
+  process.exit(1);
+}
+
+const ansibleDir = dirname(invPath);
+const stateFile = resolve(ansibleDir, ".ansible-tui-state.json");
+const hostGroups = parseInventory(invPath);
+const allItems = parsePlaybook(pbPath);
+const initialState = cleanStart ? null : loadState(stateFile);
+
+const { waitUntilExit } = render(
+  <App hostGroups={hostGroups} items={allItems} inv={relative(ansibleDir, invPath)} pb={relative(ansibleDir, pbPath)} cwd={ansibleDir}
+    initialState={initialState} />,
+);
+
+waitUntilExit().then(() => {
+  if (currentState) saveState(stateFile, currentState);
+  if (showCmd) {
+    console.log(`\n${showCmd}\n`);
+  }
+});
