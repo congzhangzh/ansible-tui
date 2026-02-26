@@ -40,7 +40,6 @@ jobs:
         run: |
           deno compile \
             --allow-read --allow-run --allow-write --allow-env \
-            --no-npm \
             --target ${{ matrix.target }} \
             -o ${{ matrix.artifact_name }} \
             app.tsx
