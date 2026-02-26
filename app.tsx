@@ -7,9 +7,11 @@
 //                   --import-map=https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json \
 //                   https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 
+// @deno-types="npm:@types/react@^18"
 import { useState, useMemo, useEffect, useRef } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+// @deno-types="npm:@types/js-yaml@^4"
 import { load as yamlLoad } from "js-yaml";
 import { resolve, dirname, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
