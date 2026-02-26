@@ -6,7 +6,20 @@ on:
       - "v*"
 
 jobs:
+  # Step 1: Create the GitHub Release (once, before any builds)
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+
+  # Step 2: Build each platform and upload its artifact
   build:
+    needs: create-release
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     permissions:
@@ -35,7 +48,6 @@ jobs:
         with:
           deno-version: v2.x
 
-
       - name: Inject version
         run: |
           VERSION=${GITHUB_REF_NAME#v}
@@ -52,6 +64,5 @@ jobs:
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ matrix.artifact_name }}
