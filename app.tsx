@@ -17,7 +17,7 @@ import process from "node:process";
 
 // ===== Version =====
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.4";
 
 // ===== Types =====
 

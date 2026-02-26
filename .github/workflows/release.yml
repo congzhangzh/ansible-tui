@@ -36,6 +36,12 @@ jobs:
           deno-version: v2.x
 
 
+      - name: Inject version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sed -i.bak "s/const VERSION = \".*\"/const VERSION = \"${VERSION}\"/" app.tsx
+          rm -f app.tsx.bak
+
       - name: Compile
         run: |
           deno compile \

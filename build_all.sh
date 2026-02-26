@@ -12,6 +12,14 @@ TARGETS=(
 
 mkdir -p dist
 
+# Inject version from git describe (e.g. 0.2.4 on tag, 0.2.4-3-gabc1234 after commits)
+VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
+if [ -n "$VERSION" ]; then
+  echo "▶ Injecting version: ${VERSION}"
+  sed -i.bak "s/const VERSION = \".*\"/const VERSION = \"${VERSION}\"/" app.tsx
+  rm -f app.tsx.bak
+fi
+
 for entry in "${TARGETS[@]}"; do
   target="${entry%%:*}"
   name="${entry##*:}"
