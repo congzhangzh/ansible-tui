@@ -1,0 +1,14 @@
+all:
+  children:
+    webservers:
+      hosts:
+        web1.example.com:
+        web2.example.com:
+    dbservers:
+      hosts:
+        db1.example.com:
+        db2.example.com:
+    cacheservers:
+      hosts:
+        redis1.example.com:
+        redis2.example.com:

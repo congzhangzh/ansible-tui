@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: ansible-tui-linux-arm64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: ansible-tui-linux-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: ansible-tui-macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: ansible-tui-macos-amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: deno install
+
+      - name: Compile
+        run: deno compile --allow-read --allow-run --allow-write --allow-env --target ${{ matrix.target }} -o ${{ matrix.artifact_name }} app.tsx
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.artifact_name }}

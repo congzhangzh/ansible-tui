@@ -198,7 +198,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
   const [outputScroll, setOutputScroll] = useState(0);
   const outputRef = useRef("");
   const childRef = useRef<ChildProcess | null>(null);
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   const visible = useMemo(() => items.filter((i) => {
     if (i.type === "play") return true;
@@ -212,11 +212,16 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     return true;
   }), [items, expanded]);
 
-  // Viewport for playbook scrolling
-  const pbViewH = Math.max(5, rows - flatHosts.length - 10);
+  // Viewports for scrolling
+  const viewH = Math.max(10, rows - 19); // Reserved rows for header, borders, commands, footer
+  
   const safePCur = Math.max(0, Math.min(pCur, visible.length - 1));
-  const scrollStart = Math.max(0, Math.min(safePCur - Math.floor(pbViewH / 2), visible.length - pbViewH));
-  const pbSlice = visible.slice(scrollStart, scrollStart + pbViewH);
+  const pScrollStart = Math.max(0, Math.min(safePCur - Math.floor(viewH / 2), Math.max(0, visible.length - viewH)));
+  const pbSlice = visible.slice(pScrollStart, pScrollStart + viewH);
+
+  const safeHCur = Math.max(0, Math.min(hCur, flatHosts.length - 1));
+  const hScrollStart = Math.max(0, Math.min(safeHCur - Math.floor(viewH / 2), Math.max(0, flatHosts.length - viewH)));
+  const hostSlice = flatHosts.slice(hScrollStart, hScrollStart + viewH);
 
   const cmd = buildCommand(hostSel, taskSel, items, inv, pb);
   const fullCmd = cmd + (checkFlag ? " --check" : "") + (diffFlag ? " --diff" : "");
@@ -240,7 +245,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     });
     childRef.current = child;
 
-    const onData = (data: Buffer) => { outputRef.current += data.toString(); };
+    const onData = (data: any) => { outputRef.current += data.toString(); };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
 
@@ -432,88 +437,138 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
       return parts[parts.length - 1];
     });
 
-    const viewH = rows - 4;
+    const viewH = rows - 8;
     const totalLines = outputLines.length;
     // Auto-scroll during running, user-controlled in done
     const effectiveScroll = phase === "running"
       ? Math.max(0, totalLines - viewH)
       : Math.max(0, Math.min(outputScroll, Math.max(0, totalLines - viewH)));
     const slice = outputLines.slice(effectiveScroll, effectiveScroll + viewH);
+    
+    const spinner = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'][tick % 10];
 
     return (
-      <Box flexDirection="column">
-        <Text bold color={phase === "running" ? "yellow" : (runExitCode === 0 ? "green" : "red")}>
-          {phase === "running"
-            ? ` ⏳ ${runCmd}`
-            : ` ${runExitCode === 0 ? "✓" : "✗"} Exit ${runExitCode}`}
-        </Text>
-        {slice.map((line, i) => (
-          <Text key={effectiveScroll + i}>{line}</Text>
-        ))}
-        {totalLines > viewH && (
-          <Text dimColor> ({effectiveScroll + 1}–{Math.min(effectiveScroll + viewH, totalLines)}/{totalLines})</Text>
-        )}
-        <Text dimColor>
-          {phase === "done"
-            ? " [Enter] back to selection  [↑↓] scroll  [q] quit"
-            : " [q] cancel"}
-        </Text>
+      <Box flexDirection="column" padding={1} borderStyle="round" borderColor={phase === "running" ? "yellow" : (runExitCode === 0 ? "green" : "red")}>
+        <Box marginBottom={1}>
+          <Text bold color={phase === "running" ? "yellow" : (runExitCode === 0 ? "green" : "red")}>
+            {phase === "running"
+              ? ` ${spinner} Running: ${runCmd}`
+              : ` ${runExitCode === 0 ? "✓ Success:" : "✗ Failed:"} ${runCmd} (Exit ${runExitCode})`}
+          </Text>
+        </Box>
+        <Box flexDirection="column" flexGrow={1}>
+          {slice.map((line, i) => (
+            <Text key={effectiveScroll + i}>{line}</Text>
+          ))}
+        </Box>
+        <Box marginTop={1} flexDirection="row" justifyContent="space-between">
+          <Text dimColor>
+            {totalLines > viewH ? `Lines ${effectiveScroll + 1}–${Math.min(effectiveScroll + viewH, totalLines)} / ${totalLines}` : `Total ${totalLines} lines`}
+          </Text>
+          <Text dimColor>
+            {phase === "done"
+              ? " [Enter] Back to selection   [↑↓] Scroll   [q] Quit"
+              : " [q] Cancel"}
+          </Text>
+        </Box>
       </Box>
     );
   }
 
   // ====== Render: Select ======
   return (
-    <Box flexDirection="column">
-      <Text bold color="cyan"> Ansible TUI Runner</Text>
-      {lastResult !== "" && <Text dimColor> {lastResult}</Text>}
+    <Box flexDirection="column" paddingX={2} paddingY={1} width="100%">
+      <Box marginBottom={1} flexDirection="row" justifyContent="space-between">
+        <Text bold color="cyan" backgroundColor="blue"> 🚀 Ansible TUI Runner </Text>
+        {lastResult !== "" && <Text color={lastResult.includes("✓") ? "green" : "red"}>{lastResult}</Text>}
+      </Box>
 
-      <Text bold dimColor>{`── Hosts${section === "hosts" ? " *" : ""} ──`}</Text>
-      {flatHosts.map((hi, i) => {
-        const cur = section === "hosts" && i === hCur;
-        const ind = hi.kind === "host" ? "  " : "";
-        const lbl = hi.kind === "group"
-          ? `${hi.name} (${hostGroups.find((g) => g.name === hi.name)!.hosts.filter((h) => hostSel.has(h)).length}/${hostGroups.find((g) => g.name === hi.name)!.hosts.length})`
-          : hi.name;
-        return (
-          <Text key={`h${i}`} color={cur ? "yellow" : undefined} bold={cur || hi.kind === "group"}>
-            {cur ? ">" : " "} {ind}[{hCheck(hi)}] {lbl}
-          </Text>
-        );
-      })}
-
-      <Text bold dimColor>{`── Playbook${section === "playbook" ? " *" : ""} ──`}</Text>
-      {pbSlice.map((it, vi) => {
-        const ri = scrollStart + vi;
-        const cur = section === "playbook" && ri === safePCur;
-        const arrow = (it.type === "play" || it.type === "block")
-          ? (expanded.has(it.id) ? "▼ " : "▶ ") : "  ";
-        const ind = "    ".repeat(it.depth);
-        const tagStr = it.tags.length > 0 ? ` [${it.tags.join(",")}]` : "";
-        return (
-          <Box key={it.id}>
-            <Text color={cur ? "yellow" : undefined} bold={cur || it.type === "play" || it.type === "block"}>
-              {cur ? ">" : " "} {ind}{arrow}[{tCheck(it)}] {it.label}
-            </Text>
-            {tagStr && <Text dimColor>{tagStr}</Text>}
+      <Box width="100%" flexDirection="row" gap={2}>
+        {/* -- Hosts Panel -- */}
+        <Box flexDirection="column" width="35%" borderStyle="round" borderColor={section === "hosts" ? "blue" : "gray"}>
+          <Box paddingX={1} marginBottom={1}>
+            <Text bold color={section === "hosts" ? "blue" : "white"}>Hosts{section === "hosts" ? " *" : ""}</Text>
           </Box>
-        );
-      })}
-      {visible.length > pbViewH && (
-        <Text dimColor> ({scrollStart + 1}-{Math.min(scrollStart + pbViewH, visible.length)}/{visible.length})</Text>
-      )}
+          <Box flexDirection="column" paddingX={1}>
+            {hostSlice.map((hi, i) => {
+              const ri = hScrollStart + i;
+              const cur = section === "hosts" && ri === hCur;
+              const ind = hi.kind === "host" ? "  " : "";
+              const lbl = hi.kind === "group"
+                ? `${hi.name} (${hostGroups.find((g) => g.name === hi.name)!.hosts.filter((h) => hostSel.has(h)).length}/${hostGroups.find((g) => g.name === hi.name)!.hosts.length})`
+                : hi.name;
+              return (
+                <Text key={`h${ri}`} color={cur ? "yellow" : undefined} bold={cur || hi.kind === "group"}>
+                  {cur ? "❯" : " "} {ind}[{hCheck(hi)}] {lbl}
+                </Text>
+              );
+            })}
+            {flatHosts.length > viewH && (
+              <Text dimColor>
+                ({hScrollStart + 1}-{Math.min(hScrollStart + viewH, flatHosts.length)}/{flatHosts.length})
+              </Text>
+            )}
+          </Box>
+        </Box>
 
-      <Text bold dimColor>── Command ──</Text>
-      <Text color="green"> {fullCmd || "(select hosts and tasks)"}</Text>
-      <Text dimColor>{` [c] check:${checkFlag ? "ON" : "off"}  [d] diff:${diffFlag ? "ON" : "off"}`}</Text>
-      {!hasTags && hasTaskSelection && hasUntaggedSel && (
-        <Text color="yellow"> ⚠ selected tasks have no tags — all non-never tasks will run</Text>
-      )}
-      {hasTags && hasUntaggedSel && (
-        <Text color="yellow"> ⚠ untagged tasks won't run when --tags is set</Text>
-      )}
+        {/* -- Playbook Panel -- */}
+        <Box flexDirection="column" width="65%" borderStyle="round" borderColor={section === "playbook" ? "blue" : "gray"}>
+          <Box paddingX={1} marginBottom={1}>
+            <Text bold color={section === "playbook" ? "blue" : "white"}>Playbook{section === "playbook" ? " *" : ""}</Text>
+          </Box>
+          <Box flexDirection="column" paddingX={1}>
+            {pbSlice.map((it, vi) => {
+              const ri = pScrollStart + vi;
+              const cur = section === "playbook" && ri === pCur;
+              const arrow = (it.type === "play" || it.type === "block")
+                ? (expanded.has(it.id) ? "▼ " : "▶ ") : "  ";
+              const ind = "  ".repeat(it.depth);
+              const tagStr = it.tags.length > 0 ? ` [${it.tags.join(",")}]` : "";
+              return (
+                <Box key={it.id}>
+                  <Text color={cur ? "yellow" : undefined} bold={cur || it.type === "play" || it.type === "block"}>
+                    {cur ? "❯" : " "} {ind}{arrow}[{tCheck(it)}] {it.label}
+                  </Text>
+                  {tagStr && <Text dimColor> {tagStr}</Text>}
+                </Box>
+              );
+            })}
+            {visible.length > viewH && (
+              <Text dimColor>
+                ({pScrollStart + 1}-{Math.min(pScrollStart + viewH, visible.length)}/{visible.length})
+              </Text>
+            )}
+          </Box>
+        </Box>
+      </Box>
 
-      <Text dimColor> [Tab] switch  [Space] toggle  [a] all hosts  [→/Enter] expand  [←] collapse  [r] run  [c] check  [d] diff  [s] show  [q] quit</Text>
+      {/* -- Command Panel -- */}
+      <Box borderStyle="round" borderColor="green" flexDirection="column" paddingX={1}>
+        <Text bold color="green">Command Options</Text>
+        <Box marginTop={1} paddingX={1}>
+          <Text color="white">{fullCmd || "(select hosts and tasks)"}</Text>
+        </Box>
+        <Box marginTop={1} paddingX={1} flexDirection="row" gap={4}>
+           <Text color={checkFlag ? "yellow" : "gray"}>--check: {checkFlag ? "ON" : "OFF"}</Text>
+           <Text color={diffFlag ? "yellow" : "gray"}>--diff: {diffFlag ? "ON" : "OFF"}</Text>
+           {!hasTags && hasTaskSelection && hasUntaggedSel && (
+             <Text color="yellow"> ⚠ all non-never tasks will run</Text>
+           )}
+           {hasTags && hasUntaggedSel && (
+             <Text color="yellow"> ⚠ untagged tasks won't run</Text>
+           )}
+        </Box>
+      </Box>
+
+      {/* -- Footer -- */}
+      <Box flexDirection="column" marginTop={1} paddingX={1}>
+        <Text dimColor>
+          <Text bold color="white">[Tab]</Text> Switch Panel   <Text bold color="white">[Space]</Text> Toggle   <Text bold color="white">[a]</Text> All Hosts   <Text bold color="white">[→/Enter]</Text> Expand   <Text bold color="white">[←]</Text> Collapse
+        </Text>
+        <Text dimColor>
+          <Text bold color="white">[r]</Text> Run command   <Text bold color="white">[c]</Text> Toggle --check   <Text bold color="white">[d]</Text> Toggle --diff   <Text bold color="white">[s]</Text> Show Cmd   <Text bold color="white">[q]</Text> Quit
+        </Text>
+      </Box>
     </Box>
   );
 }

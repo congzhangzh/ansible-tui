@@ -1,0 +1,30 @@
+- name: Deploy Web Application
+  hosts: webservers
+  tags: [deploy, web]
+  tasks:
+    - name: Ensure nginx is installed
+      tags: [nginx, install]
+      command: echo "Installing nginx"
+
+    - name: Configure web server block
+      tags: [config]
+      block:
+        - name: Copy index.html
+          tags: [content]
+          command: echo "Copying content"
+
+        - name: Restart nginx
+          tags: [service]
+          command: echo "Restarting nginx"
+
+- name: Setup Database
+  hosts: dbservers
+  tags: [db]
+  tasks:
+    - name: Preflight checks
+      tags: [never, preflight]
+      command: echo "Checking disk space"
+
+    - name: Ensure PostgreSQL is running
+      tags: [service]
+      command: echo "Starting Postgres"
