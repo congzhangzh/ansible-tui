@@ -115,16 +115,14 @@ ansible-tui --version
 ### Run without installing (Deno)
 
 ```bash
-# From local clone
+# One line, run from anywhere (no clone)
+deno run --allow-read --allow-run --allow-write --allow-env --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/import_map.json https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
+```
+
+From a local clone (uses local `deno.json`):
+
+```bash
 deno run --allow-read --allow-run --allow-write --allow-env app.tsx
-
-# Directly from GitHub — zero local files required
-deno run --allow-read --allow-run --allow-write --allow-env \
-  https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
-
-deno run --allow-read --allow-run --allow-write --allow-env \
-  --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/import_map.json \
-  https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 ```
 
 ---

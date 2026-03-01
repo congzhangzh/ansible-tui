@@ -3,13 +3,11 @@
 //
 // Run (binary):   ansible-tui [inventory.yml] [playbook.yml]
 // Run (local):    deno run --allow-read --allow-run --allow-write --allow-env app.tsx
-// Run (remote):   deno run --allow-read --allow-run --allow-write --allow-env \
-//                   --import-map=https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/import_map.json \
-//                   https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
-//                 (use import_map.json: --import-map URL only allows "imports"/"scopes", not compilerOptions)
+// Run (remote):   deno run ... --import-map=https://.../import_map.json https://.../app.tsx
+//                 (--config accepts local path only; import-map URL provides deps, classic JSX needs React in scope)
 
 // @deno-types="npm:@types/react@^18"
-import { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // @deno-types="npm:@types/js-yaml@^4"
