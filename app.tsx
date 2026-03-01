@@ -3,7 +3,7 @@
 //
 // Run (binary):   ansible-tui [inventory.yml] [playbook.yml]
 // Run (local):    deno run --allow-read --allow-run --allow-write --allow-env app.tsx
-// Run (remote):   deno run ... --import-map=https://.../import_map.json https://.../app.tsx
+// Run (remote):   deno run ... --import-map=https://.../deno.json https://.../app.tsx
 //                 (--config accepts local path only; import-map URL provides deps, classic JSX needs React in scope)
 
 // @deno-types="npm:@types/react@^18"

@@ -17,15 +17,27 @@
 
 ---
 
-## Install (one line)
+## Install
+### Download and install
 
 ```bash
 curl -sL https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/install.sh | bash
-sudo mv ansible-tui /usr/local/bin/
+./ansible-tui
 ```
 
 No Node.js. No Python runtime. No background services. Just one binary.
 
+### Run directly with Deno
+
+```
+deno run --allow-read --allow-run --allow-write --allow-env --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
+```
+
+### Run with Deno (reload for latest deps)
+
+```
+deno run -R --allow-read --allow-run --allow-write --allow-env --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
+```
 ---
 
 ## The problem
@@ -116,7 +128,7 @@ ansible-tui --version
 
 ```bash
 # One line, run from anywhere (no clone)
-deno run --allow-read --allow-run --allow-write --allow-env --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/import_map.json https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
+deno run --allow-read --allow-run --allow-write --allow-env --import-map https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/deno.json https://raw.githubusercontent.com/congzhangzh/ansible-tui/main/app.tsx
 ```
 
 From a local clone (uses local `deno.json`):
