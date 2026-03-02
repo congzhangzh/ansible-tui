@@ -44,6 +44,10 @@ interface HostListItem {
   group?: string;
 }
 
+interface ProjectConfig {
+  smartTags?: boolean;
+}
+
 // ===== YAML Parsing =====
 
 function parseInventory(filePath: string): HostGroup[] {
@@ -136,6 +140,51 @@ function buildCommand(hosts: Set<string>, checked: Set<string>, items: FlatItem[
   return parts.join(" ");
 }
 
+function collectAncestorTags(item: FlatItem, items: FlatItem[]): Set<string> {
+  const tags = new Set<string>();
+  const play = items.find((i) => i.type === "play" && i.playIndex === item.playIndex);
+  if (play) play.tags.forEach((t) => tags.add(t));
+  let pid = item.parentId;
+  while (pid) {
+    const parent = items.find((i) => i.id === pid);
+    if (!parent) break;
+    if (parent.type === "block") parent.tags.forEach((t) => tags.add(t));
+    pid = parent.parentId;
+  }
+  return tags;
+}
+
+function buildCommandSmart(
+  hosts: Set<string>,
+  checked: Set<string>,
+  items: FlatItem[],
+  inv: string,
+  pb: string,
+  smartTags: boolean,
+): string {
+  if (!smartTags) return buildCommand(hosts, checked, items, inv, pb);
+  const parts = ["ansible-playbook", "-i", inv, pb];
+  if (hosts.size > 0) parts.push("--limit", [...hosts].join(","));
+  const tags = new Set<string>();
+  for (const id of checked) {
+    const it = items.find((i) => i.id === id);
+    if (!it || it.type !== "task") continue;
+    const ancestor = collectAncestorTags(it, items);
+    const own = new Set(it.tags);
+    const delta: string[] = [];
+    for (const t of own) if (!ancestor.has(t)) delta.push(t);
+    if (delta.length > 0) {
+      delta.forEach((t) => tags.add(t));
+    } else {
+      it.tags.forEach((t) => tags.add(t));
+    }
+    const play = items.find((i) => i.type === "play" && i.playIndex === it.playIndex);
+    if (play?.hasNever) play.tags.forEach((t) => tags.add(t));
+  }
+  if (tags.size > 0) parts.push("--tags", [...tags].join(","));
+  return parts.join(" ");
+}
+
 // ===== State Persistence =====
 
 interface PersistedState {
@@ -163,6 +212,20 @@ function saveState(filePath: string, state: PersistedState): void {
   try { writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n"); } catch { /* ignore */ }
 }
 
+function loadProjectConfig(filePath: string): ProjectConfig {
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (data && typeof data === "object") return data as ProjectConfig;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProjectConfig(filePath: string, cfg: ProjectConfig): void {
+  try { writeFileSync(filePath, JSON.stringify(cfg, null, 2) + "\n"); } catch { /* ignore */ }
+}
+
 // ===== App =====
 
 type Phase = "select" | "running" | "done";
@@ -170,9 +233,11 @@ type Phase = "select" | "running" | "done";
 let showCmd: string | null = null;
 let currentState: PersistedState | null = null;
 
-function App({ hostGroups, items, inv, pb, cwd, initialState }: {
+function App({ hostGroups, items, inv, pb, cwd, initialState, configFile, initialSmartTags }: {
   hostGroups: HostGroup[]; items: FlatItem[]; inv: string; pb: string; cwd: string;
   initialState?: PersistedState | null;
+  configFile: string;
+  initialSmartTags: boolean;
 }) {
   const app = useApp();
   const { stdout } = useStdout();
@@ -197,11 +262,16 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
   const [checkFlag, setCheckFlag] = useState(initialState?.checkFlag ?? false);
   const [diffFlag, setDiffFlag] = useState(initialState?.diffFlag ?? false);
   const [warnMsg, setWarnMsg] = useState<string | null>(null);
+  const [smartTags, setSmartTags] = useState<boolean>(initialSmartTags);
 
   // Track live state for persistence on exit
   useEffect(() => {
     currentState = { hostSel: [...hostSel], taskSel: [...taskSel], expanded: [...expanded], checkFlag, diffFlag, section, hCur, pCur };
   }, [hostSel, taskSel, expanded, checkFlag, diffFlag, section, hCur, pCur]);
+
+  useEffect(() => {
+    saveProjectConfig(configFile, { smartTags });
+  }, [configFile, smartTags]);
 
   // Auto-dismiss warning after 2s
   useEffect(() => {
@@ -252,7 +322,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
   const hScrollStart = Math.max(0, Math.min(safeHCur - Math.floor(viewH / 2), Math.max(0, flatHosts.length - viewH)));
   const hostSlice = flatHosts.slice(hScrollStart, hScrollStart + viewH);
 
-  const cmd = buildCommand(hostSel, taskSel, items, inv, pb);
+  const cmd = buildCommandSmart(hostSel, taskSel, items, inv, pb, smartTags);
   const fullCmd = cmd + (checkFlag ? " --check" : "") + (diffFlag ? " --diff" : "");
   const hasTags = cmd.includes("--tags");
   const hasTaskSelection = [...taskSel].some((id) => items.find((i) => i.id === id)?.type === "task");
@@ -262,6 +332,21 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
     const play = items.find((i) => i.type === "play" && i.playIndex === it.playIndex);
     return !play?.hasNever;
   });
+  const hasPureInheritedOnly = smartTags && [...taskSel].some((id) => {
+    const it = items.find((i) => i.id === id);
+    if (!it || it.type !== "task" || it.tags.length === 0) return false;
+    const ancestor = collectAncestorTags(it, items);
+    for (const t of it.tags) {
+      if (!ancestor.has(t)) return false;
+    }
+    return true;
+  });
+
+  useEffect(() => {
+    if (smartTags && hasPureInheritedOnly) {
+      setWarnMsg("⚠ some tasks only have inherited tags; consider adding more specific tags");
+    }
+  }, [smartTags, hasPureInheritedOnly]);
 
   // -- Command execution effect --
   useEffect(() => {
@@ -334,6 +419,10 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
       return;
     }
     if (input === "s") {
+      setSmartTags((v) => !v);
+      return;
+    }
+    if (input === "p") {
       showCmd = fullCmd;
       return app.exit();
     }
@@ -642,7 +731,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState }: {
           <Text bold color="white">[Tab]</Text> Switch Panel   <Text bold color="white">[Space]</Text> Toggle   <Text bold color="white">[a]</Text> All Hosts   <Text bold color="white">[e]</Text> Expand/Collapse All   <Text bold color="white">[→/Enter]</Text> Expand   <Text bold color="white">[←]</Text> Collapse
         </Text>
         <Text dimColor>
-          <Text bold color="white">[r]</Text> Run   <Text bold color="white">[c]</Text> --check   <Text bold color="white">[d]</Text> --diff   <Text bold color="white">[s]</Text> Show Cmd   <Text bold color="white">[PgUp/PgDn]</Text> Page   <Text bold color="white">[q]</Text> Quit
+          <Text bold color="white">[r]</Text> Run   <Text bold color="white">[c]</Text> --check   <Text bold color="white">[d]</Text> --diff   <Text bold color="white">[s]</Text> Smart tags on/off   <Text bold color="white">[p]</Text> Show Cmd   <Text bold color="white">[PgUp/PgDn]</Text> Page   <Text bold color="white">[q]</Text> Quit
         </Text>
       </Box>
     </Box>
@@ -685,13 +774,24 @@ if (!process.stdin.isTTY) {
 
 const ansibleDir = dirname(invPath);
 const stateFile = resolve(ansibleDir, ".ansible-tui-state.json");
+const configFile = resolve(ansibleDir, ".ansible-tui.json");
 const hostGroups = parseInventory(invPath);
 const allItems = parsePlaybook(pbPath);
 const initialState = cleanStart ? null : loadState(stateFile);
+const projectConfig = loadProjectConfig(configFile);
+const initialSmartTags = projectConfig.smartTags ?? true;
 
 const { waitUntilExit } = render(
-  <App hostGroups={hostGroups} items={allItems} inv={relative(ansibleDir, invPath)} pb={relative(ansibleDir, pbPath)} cwd={ansibleDir}
-    initialState={initialState} />,
+  <App
+    hostGroups={hostGroups}
+    items={allItems}
+    inv={relative(ansibleDir, invPath)}
+    pb={relative(ansibleDir, pbPath)}
+    cwd={ansibleDir}
+    initialState={initialState}
+    configFile={configFile}
+    initialSmartTags={initialSmartTags}
+  />,
 );
 
 waitUntilExit().then(() => {

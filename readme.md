@@ -156,13 +156,14 @@ deno run --allow-read --allow-run --allow-write --allow-env app.tsx
 
 ### Flags & Actions
 
-| Key | Action                                        |
-| --- | --------------------------------------------- |
-| `c` | Toggle `--check` (dry-run)                    |
-| `d` | Toggle `--diff` (show changes)                |
-| `r` | Run `ansible-playbook`                        |
-| `s` | Print command and exit (for piping/scripting) |
-| `q` | Quit                                          |
+| Key | Action                                                |
+| --- | ----------------------------------------------------- |
+| `c` | Toggle `--check` (dry-run)                            |
+| `d` | Toggle `--diff` (show changes)                        |
+| `r` | Run `ansible-playbook`                                |
+| `s` | Toggle smart tag filtering (`smartTags` on/off)       |
+| `p` | Print command and exit (for piping/scripting)         |
+| `q` | Quit                                                  |
 
 ### Output viewer
 
@@ -193,6 +194,14 @@ deno run --allow-read --allow-run --allow-write --allow-env app.tsx
 - If a play itself has `[never, some-tag]`, selecting any task in that play will
   include `some-tag` in `--tags`
 - Tags are rendered in **cyan** for quick identification
+- By default, **smart tag filtering** is enabled:
+  - The playbook is expected to have child blocks/tasks inherit parent tags.
+  - When you select a task, only tags that are more specific than all ancestors
+    are added to `--tags`. If a task has no more specific tags than its parents,
+    its full tag set is used and this likely indicates the playbook could use
+    more granular tags.
+  - You can disable this behavior per-project by setting `"smartTags": false`
+    in `.ansible-tui.json` next to your inventory file.
 
 ### State persistence
 
