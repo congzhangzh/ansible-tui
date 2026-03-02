@@ -15,6 +15,7 @@ import { load as yamlLoad } from "js-yaml";
 import { resolve, dirname, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import process from "node:process";
+import { parse as parseFlags } from "https://deno.land/std@0.224.0/flags/mod.ts";
 
 // ===== Version =====
 
@@ -753,18 +754,49 @@ function findFile(candidates: string[]): string {
   process.exit(1);
 }
 
-const argv = process.argv.slice(2);
+const parsedArgs = parseFlags(Deno.args, {
+  boolean: ["help", "version", "clean"],
+  alias: {
+    h: "help",
+    v: "version",
+    C: "clean",
+  },
+  stopEarly: true,
+});
 
-// Handle --version / -v flag
-if (argv.includes("--version") || argv.includes("-v")) {
+if (parsedArgs.help) {
+  console.log(`ansible-tui v${VERSION}`);
+  console.log("");
+  console.log("Usage:");
+  console.log("  ansible-tui [inventory.yml] [playbook.yml] [--clean] [--version]");
+  console.log("");
+  console.log("Positional arguments:");
+  console.log("  inventory.yml  Path to Ansible inventory file (auto-discovered if omitted).");
+  console.log("  playbook.yml   Path to Ansible playbook file (auto-discovered if omitted).");
+  console.log("");
+  console.log("Options:");
+  console.log("  -h, --help     Show this help message and exit.");
+  console.log("  -v, --version  Show version and exit.");
+  console.log("  --clean, -C    Ignore saved state and start fresh.");
+  process.exit(0);
+}
+
+if (parsedArgs.version) {
   console.log(`ansible-tui v${VERSION}`);
   process.exit(0);
 }
 
-const cleanStart = argv.includes("--clean") || argv.includes("-C");
-const args = argv.filter((a) => a !== "--clean" && a !== "-C");
-const invPath = args[0] ? resolve(args[0]) : findFile(INVENTORY_NAMES);
-const pbPath = args[1] ? resolve(args[1]) : findFile(PLAYBOOK_NAMES);
+const cleanStart = !!parsedArgs.clean;
+const positionals = parsedArgs._ as string[];
+
+if (positionals.length > 2) {
+  console.error("Error: too many positional arguments.");
+  console.error("Usage: ansible-tui [inventory.yml] [playbook.yml] [--clean] [--version]");
+  process.exit(1);
+}
+
+const invPath = positionals[0] ? resolve(positionals[0]) : findFile(INVENTORY_NAMES);
+const pbPath = positionals[1] ? resolve(positionals[1]) : findFile(PLAYBOOK_NAMES);
 
 if (!process.stdin.isTTY) {
   console.error("Error: this TUI requires an interactive terminal (TTY).");
