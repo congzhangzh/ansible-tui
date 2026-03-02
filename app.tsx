@@ -709,6 +709,7 @@ function App({ hostGroups, items, inv, pb, cwd, initialState, configFile, initia
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold color="green">Command Preview</Text>
           <Box flexDirection="row" gap={3}>
+            <Text color={smartTags ? "cyan" : "gray"}>smart-tags {smartTags ? "ON" : "off"}</Text>
             <Text color={checkFlag ? "yellow" : "gray"}>--check {checkFlag ? "ON" : "off"}</Text>
             <Text color={diffFlag ? "yellow" : "gray"}>--diff {diffFlag ? "ON" : "off"}</Text>
             {!hasTags && hasTaskSelection && hasUntaggedSel && (
